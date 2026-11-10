@@ -1,0 +1,90 @@
+name: Twitch Live Status
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: twitch-live-status
+  cancel-in-progress: false
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Twitch and update status
+        env:
+          TWITCH_CLIENT_ID: ${{ vars.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_CHANNEL: therealdevon_1
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          def request(url, data=None, headers=None):
+              req = urllib.request.Request(
+                  url, data=data, headers=headers or {}
+              )
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  return json.load(response)
+
+          client_id = os.environ["TWITCH_CLIENT_ID"]
+          client_secret = os.environ["TWITCH_CLIENT_SECRET"]
+          channel = os.environ["TWITCH_CHANNEL"]
+
+          token_data = request(
+              "https://id.twitch.tv/oauth2/token",
+              data=urllib.parse.urlencode({
+                  "client_id": client_id,
+                  "client_secret": client_secret,
+                  "grant_type": "client_credentials"
+              }).encode()
+          )
+
+          stream_data = request(
+              "https://api.twitch.tv/helix/streams?user_login="
+              + urllib.parse.quote(channel),
+              headers={
+                  "Client-ID": client_id,
+                  "Authorization": "Bearer " + token_data["access_token"]
+              }
+          )
+
+          streams = stream_data.get("data", [])
+          stream = streams[0] if streams else None
+
+          status = {
+              "live": stream is not None,
+              "channel": channel,
+              "url": "https://www.twitch.tv/" + channel,
+              "title": stream.get("title", "") if stream else "",
+              "game": stream.get("game_name", "") if stream else "",
+              "checked_at": datetime.now(timezone.utc).isoformat()
+          }
+
+          with open("live-status.json", "w") as f:
+              json.dump(status, f, indent=2)
+
+          print("Twitch status checked successfully.")
+          PY
+
+      - name: Commit status if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add live-status.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update Twitch live status"
+            git push
+          fi
